@@ -1,0 +1,11 @@
+{
+  "DM": {
+    "avatar_url": "https://example.com/avatars/dm.png"
+  },
+  "Riven": {
+    "avatar_url": "https://example.com/avatars/riven.png"
+  },
+  "Thorn": {
+    "avatar_url": "https://example.com/avatars/thorn.png"
+  }
+}

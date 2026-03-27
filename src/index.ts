@@ -7,6 +7,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { Client, GatewayIntentBits, TextChannel } from 'discord.js';
 import { z } from 'zod';
+import { readFile } from 'fs/promises';
 
 // Load environment variables
 dotenv.config();
@@ -104,6 +105,16 @@ const ReadMessagesSchema = z.object({
   limit: z.number().min(1).max(100).default(50),
 });
 
+const SendWebhookMessageSchema = z.object({
+  webhook_url: z.string().url().optional().describe('Discord webhook URL. Falls back to DISCORD_WEBHOOK_URL env var if omitted.'),
+  character: z.string().optional().describe('Character name from characters.json. Auto-fills username and avatar_url.'),
+  username: z.string().optional().describe('Display name override when not using a character.'),
+  avatar_url: z.string().url().optional().describe('Avatar URL override.'),
+  content: z.string().min(1).max(2000).describe('Message content (max 2000 chars).'),
+});
+
+let characters: Record<string, { avatar_url: string }> = {};
+
 // Create server instance
 const server = new Server(
   {
@@ -166,6 +177,36 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           required: ["channel"],
         },
       },
+      {
+        name: "send-as-character",
+        description: "Send a message via Discord webhook as a named character with custom avatar. No bot tag — message appears as the character.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            webhook_url: {
+              type: "string",
+              description: "Discord webhook URL. Falls back to DISCORD_WEBHOOK_URL env var if omitted.",
+            },
+            character: {
+              type: "string",
+              description: "Character name from characters.json. Auto-fills username and avatar_url.",
+            },
+            username: {
+              type: "string",
+              description: "Display name override when not using a character.",
+            },
+            avatar_url: {
+              type: "string",
+              description: "Avatar URL override.",
+            },
+            content: {
+              type: "string",
+              description: "Message content (max 2000 chars).",
+            },
+          },
+          required: ["content"],
+        },
+      },
     ],
   };
 });
@@ -210,6 +251,50 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
       }
 
+      case "send-as-character": {
+        const { webhook_url, character, username, avatar_url, content } =
+          SendWebhookMessageSchema.parse(args);
+
+        const resolvedWebhookUrl = webhook_url ?? process.env.DISCORD_WEBHOOK_URL;
+        if (!resolvedWebhookUrl) {
+          throw new Error('No webhook URL. Pass webhook_url parameter or set DISCORD_WEBHOOK_URL env var.');
+        }
+
+        let resolvedUsername: string | undefined;
+        let resolvedAvatarUrl: string | undefined;
+
+        if (character) {
+          const charConfig = characters[character];
+          resolvedUsername = character;
+          resolvedAvatarUrl = charConfig?.avatar_url ?? avatar_url;
+        } else {
+          resolvedUsername = username;
+          resolvedAvatarUrl = avatar_url;
+        }
+
+        const payload: Record<string, string> = { content };
+        if (resolvedUsername) payload.username = resolvedUsername;
+        if (resolvedAvatarUrl) payload.avatar_url = resolvedAvatarUrl;
+
+        const response = await fetch(resolvedWebhookUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+
+        if (!response.ok) {
+          const errorBody = await response.text();
+          throw new Error(`Webhook failed: ${response.status} ${response.statusText} - ${errorBody}`);
+        }
+
+        return {
+          content: [{
+            type: 'text',
+            text: `Webhook message sent as "${resolvedUsername ?? 'webhook'}"`,
+          }],
+        };
+      }
+
       default:
         throw new Error(`Unknown tool: ${name}`);
     }
@@ -239,6 +324,15 @@ async function main() {
   }
   
   try {
+    // Load character config
+    try {
+      const raw = await readFile('./characters.json', 'utf-8');
+      characters = JSON.parse(raw);
+      console.error(`Loaded ${Object.keys(characters).length} characters from characters.json`);
+    } catch {
+      characters = {};
+    }
+
     // Login to Discord
     await client.login(token);
 
